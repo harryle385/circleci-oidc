@@ -1,0 +1,101 @@
+version: 2
+
+aliases:
+  - &deploy_config
+    docker:
+      - image: alpine/helm:3.6.0
+    environment:
+      APP: link
+  - &test_ci_config
+    docker:
+      - image: node:14.7-alpine
+  - &step_test_ci
+    run:
+      name: Run tests
+      command: |
+        yarn install
+        yarn test:ci
+  - &step_setup_remote_docker
+    setup_remote_docker:
+      version: 19.03.13
+      docker_layer_caching: true
+  - &step_install_deps
+    run:
+      name: Install dependencies
+      command: |
+        apk add --update bash curl docker git gnupg python3 py-pip
+        curl -o /usr/local/bin/aws-iam-authenticator https://amazon-eks.s3-us-west-2.amazonaws.com/1.14.6/2019-08-22/bin/linux/amd64/aws-iam-authenticator
+        chmod 0755 /usr/local/bin/aws-iam-authenticator
+        python3 -mpip install awscli
+        curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.22.3/bin/linux/amd64/kubectl
+        chmod u+x kubectl && mv kubectl /bin/kubectl
+  - &step_set_version
+    run:
+      name: Set version
+      shell: /bin/bash -eo pipefail
+      command: |
+        echo "export VERSION=$(git rev-parse --short HEAD)" >> $BASH_ENV 
+  - &step_set_environment
+    run:
+      name: Set environment
+      shell: /bin/bash -eo pipefail
+      command: |
+        if [ "${CIRCLE_BRANCH}" == "main" ]; then
+          export ENV=test
+          echo 'export ENV=test' >> $BASH_ENV
+          echo "export KUBECONFIG=/root/project/.circleci/kubeconfig-test" >> $BASH_ENV
+          sed -i "s|\$AWS_ACCESS_KEY_ID|${TEST_AWS_ACCESS_KEY_ID}|g" /root/project/.circleci/kubeconfig-test
+          sed -i "s|\$AWS_SECRET_ACCESS_KEY|${TEST_AWS_SECRET_ACCESS_KEY}|g" /root/project/.circleci/kubeconfig-test
+          echo 'export AWS_ACCESS_KEY_ID=${TEST_AWS_ACCESS_KEY_ID}' >> $BASH_ENV
+          echo 'export AWS_SECRET_ACCESS_KEY=${TEST_AWS_SECRET_ACCESS_KEY}' >> $BASH_ENV
+        elif [ "${CIRCLE_BRANCH}" == "master" ]; then
+          export ENV=prod
+          echo 'export ENV=prod' >> $BASH_ENV
+          echo "export KUBECONFIG=/root/project/.circleci/kubeconfig-prod" >> $BASH_ENV
+          sed -i "s|\$AWS_ACCESS_KEY_ID|${PROD_AWS_ACCESS_KEY_ID}|g" /root/project/.circleci/kubeconfig-prod
+          sed -i "s|\$AWS_SECRET_ACCESS_KEY|${PROD_AWS_SECRET_ACCESS_KEY}|g" /root/project/.circleci/kubeconfig-prod
+          echo 'export AWS_ACCESS_KEY_ID=${PROD_AWS_ACCESS_KEY_ID}' >> $BASH_ENV
+          echo 'export AWS_SECRET_ACCESS_KEY=${PROD_AWS_SECRET_ACCESS_KEY}' >> $BASH_ENV
+        else
+          echo 'Unknown branch' >&2
+          exit 1
+        fi
+        echo "export NS=climate" >> $BASH_ENV
+
+  - &step_deploy
+    run:
+      name: Deploy
+      shell: /bin/bash -eo pipefail
+      command: |
+        kubectl api-versions --kubeconfig ${KUBECONFIG}
+  - &step_deploy_cleanup
+    run:
+      name: Cleanup
+      shell: /bin/bash -eo pipefail
+      command: |
+        rm -f $KUBECONFIG $BASH_ENV
+      when: always
+
+workflows:
+  version: 2
+
+  build_and_deploy:
+    jobs:
+      - deploy:
+          filters:
+            branches:
+              only: 
+                - staging
+                - master
+
+jobs:    
+  deploy:
+    <<: *deploy_config
+    steps:
+      - checkout
+      - *step_setup_remote_docker
+      - *step_install_deps
+      - *step_set_version
+      - *step_set_environment
+      - *step_deploy
+      - *step_deploy_cleanup
