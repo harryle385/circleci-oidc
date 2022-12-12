@@ -1,230 +1,101 @@
----
-    version: 2
-    
-    aliases:
-      - &build_config
-        docker:
-          # - image: alpine:3.10
-          - image: public.ecr.aws/q1f5a1a9/circleci:build
-        environment:
-          APP: allinfra
-          AWS_DEFAULT_REGION: eu-west-1
-          ALLINFRA_ECR: 243771237545.dkr.ecr.eu-west-1.amazonaws.com
-          IMAGE_NAME: 243771237545.dkr.ecr.eu-west-1.amazonaws.com/climate-drec-token-api
-    
-      - &deploy_config
-        docker:
-          # - image: alpine/helm:3.6.0
-          - image: public.ecr.aws/q1f5a1a9/circleci:deploy
-        environment:
-          APP: allinfra
-    
-      - &step_setup_remote_docker
-        setup_remote_docker:
-          version: 19.03.13
-          docker_layer_caching: true
-    
-      # - &step_install_deps
-      #   run:
-      #     name: Install Dependencies
-      #     command: |
-      #       apk add --update bash curl docker git gnupg python3 py-pip
-      #       curl -o /usr/local/bin/aws-iam-authenticator https://amazon-eks.s3-us-west-2.amazonaws.com/1.14.6/2019-08-22/bin/linux/amd64/aws-iam-authenticator
-      #       chmod 0755 /usr/local/bin/aws-iam-authenticator
-      #       python3 -mpip install awscli
-      #       curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.22.3/bin/linux/amd64/kubectl
-      #       chmod u+x kubectl && mv kubectl /bin/kubectl
-    
-      - &step_set_version
-        run:
-          name: Set Version
-          shell: /bin/bash -eo pipefail
-          command: |
-            echo "export VERSION=$(git rev-parse --short HEAD)" >> $BASH_ENV
-    
-      - &step_set_environment
-        run:
-          name: Set Environment
-          shell: /bin/bash -eo pipefail
-          command: |
-            if [ "${CIRCLE_BRANCH}" == "test" ]; then
-              export ENV=test
-              echo 'export ENV=test' >> $BASH_ENV
-              STS=($(aws sts assume-role-with-web-identity --role-arn $TEST_ARN_ROLE --role-session-name "${CIRCLE_BRANCH}-${CIRCLE_BUILD_NUM}" --web-identity-token "${CIRCLE_OIDC_TOKEN}" --duration-seconds 1800 --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text))
-              echo "export AWS_ACCESS_KEY_ID=${STS[0]}" >> $BASH_ENV
-              echo "export AWS_SECRET_ACCESS_KEY=${STS[1]}" >> $BASH_ENV
-              echo "export AWS_SESSION_TOKEN=${STS[2]}" >> $BASH_ENV
+version: 2
 
-            elif [ "${CIRCLE_BRANCH}" == "staging" ]; then
-              export ENV=stage
-              echo 'export ENV=stage' >> $BASH_ENV
-              STS=($(aws sts assume-role-with-web-identity --role-arn $STAGE_ARN_ROLE --role-session-name "${CIRCLE_BRANCH}-${CIRCLE_BUILD_NUM}" --web-identity-token "${CIRCLE_OIDC_TOKEN}" --duration-seconds 1800 --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text))
-              echo "export AWS_ACCESS_KEY_ID=${STS[0]}" >> $BASH_ENV
-              echo "export AWS_SECRET_ACCESS_KEY=${STS[1]}" >> $BASH_ENV
-              echo "export AWS_SESSION_TOKEN=${STS[2]}" >> $BASH_ENV
-              aws eks update-kubeconfig --name staging-cluster --region eu-west-1
+aliases:
+  - &deploy_config
+    docker:
+      - image: alpine/helm:3.6.0
+    environment:
+      APP: link
+  - &test_ci_config
+    docker:
+      - image: node:14.7-alpine
+  - &step_test_ci
+    run:
+      name: Run tests
+      command: |
+        yarn install
+        yarn test:ci
+  - &step_setup_remote_docker
+    setup_remote_docker:
+      version: 19.03.13
+      docker_layer_caching: true
+  - &step_install_deps
+    run:
+      name: Install dependencies
+      command: |
+        apk add --update bash curl docker git gnupg python3 py-pip
+        curl -o /usr/local/bin/aws-iam-authenticator https://amazon-eks.s3-us-west-2.amazonaws.com/1.14.6/2019-08-22/bin/linux/amd64/aws-iam-authenticator
+        chmod 0755 /usr/local/bin/aws-iam-authenticator
+        python3 -mpip install awscli
+        curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.22.3/bin/linux/amd64/kubectl
+        chmod u+x kubectl && mv kubectl /bin/kubectl
+  - &step_set_version
+    run:
+      name: Set version
+      shell: /bin/bash -eo pipefail
+      command: |
+        echo "export VERSION=$(git rev-parse --short HEAD)" >> $BASH_ENV 
+  - &step_set_environment
+    run:
+      name: Set environment
+      shell: /bin/bash -eo pipefail
+      command: |
+        if [ "${CIRCLE_BRANCH}" == "main" ]; then
+          export ENV=test
+          echo 'export ENV=test' >> $BASH_ENV
+          echo "export KUBECONFIG=/root/project/.circleci/kubeconfig-test" >> $BASH_ENV
+          sed -i "s|\$AWS_ACCESS_KEY_ID|${TEST_AWS_ACCESS_KEY_ID}|g" /root/project/.circleci/kubeconfig-test
+          sed -i "s|\$AWS_SECRET_ACCESS_KEY|${TEST_AWS_SECRET_ACCESS_KEY}|g" /root/project/.circleci/kubeconfig-test
+          echo 'export AWS_ACCESS_KEY_ID=${TEST_AWS_ACCESS_KEY_ID}' >> $BASH_ENV
+          echo 'export AWS_SECRET_ACCESS_KEY=${TEST_AWS_SECRET_ACCESS_KEY}' >> $BASH_ENV
+        elif [ "${CIRCLE_BRANCH}" == "master" ]; then
+          export ENV=prod
+          echo 'export ENV=prod' >> $BASH_ENV
+          echo "export KUBECONFIG=/root/project/.circleci/kubeconfig-prod" >> $BASH_ENV
+          sed -i "s|\$AWS_ACCESS_KEY_ID|${PROD_AWS_ACCESS_KEY_ID}|g" /root/project/.circleci/kubeconfig-prod
+          sed -i "s|\$AWS_SECRET_ACCESS_KEY|${PROD_AWS_SECRET_ACCESS_KEY}|g" /root/project/.circleci/kubeconfig-prod
+          echo 'export AWS_ACCESS_KEY_ID=${PROD_AWS_ACCESS_KEY_ID}' >> $BASH_ENV
+          echo 'export AWS_SECRET_ACCESS_KEY=${PROD_AWS_SECRET_ACCESS_KEY}' >> $BASH_ENV
+        else
+          echo 'Unknown branch' >&2
+          exit 1
+        fi
+        echo "export NS=climate" >> $BASH_ENV
 
-            elif [ "${CIRCLE_BRANCH}" == "master" ]; then
-              export ENV=prod
-              echo 'export ENV=prod' >> $BASH_ENV
-              STS=($(aws sts assume-role-with-web-identity --role-arn $PROD_ARN_ROLE --role-session-name "${CIRCLE_BRANCH}-${CIRCLE_BUILD_NUM}" --web-identity-token "${CIRCLE_OIDC_TOKEN}" --duration-seconds 1800 --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text))
-              echo "export AWS_ACCESS_KEY_ID=${STS[0]}" >> $BASH_ENV
-              echo "export AWS_SECRET_ACCESS_KEY=${STS[1]}" >> $BASH_ENV
-              echo "export AWS_SESSION_TOKEN=${STS[2]}" >> $BASH_ENV
-              aws eks update-kubeconfig --name production-cluster --region eu-west-1
+  - &step_deploy
+    run:
+      name: Deploy
+      shell: /bin/bash -eo pipefail
+      command: |
+        kubectl api-versions --kubeconfig ${KUBECONFIG}
+  - &step_deploy_cleanup
+    run:
+      name: Cleanup
+      shell: /bin/bash -eo pipefail
+      command: |
+        rm -f $KUBECONFIG $BASH_ENV
+      when: always
 
-            else
-              echo 'Unknown Branch' >&2
-              exit 1
-            fi
-            echo "export NS=climate" >> $BASH_ENV
-    
-      - &step_build_image
-        run:
-          name: Build Image
-          shell: /bin/bash -eo pipefail
-          command: |
-            eval $(aws ecr get-login --no-include-email --region eu-west-1)
-            docker pull ${IMAGE_NAME}:latest
-            docker build --build-arg NODE_ENV=prod --cache-from ${IMAGE_NAME}:latest -t ${IMAGE_NAME}:${VERSION} .
-            docker tag ${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:latest
-    
-      - &step_push_image
-        run:
-          name: Push Image
-          shell: /bin/bash -eo pipefail
-          command: |
-            eval $(aws ecr get-login --no-include-email --region eu-west-1)
-            docker push ${IMAGE_NAME}:${VERSION}
-            docker push ${IMAGE_NAME}:latest
-    
+workflows:
+  version: 2
 
-      - &step_build_cleanup
-        run:
-          name: Clean-Up
-          shell: /bin/bash -eo pipefail
-          command: |
-            docker image rm ${IMAGE_NAME}:${VERSION}
-            docker image rm ${IMAGE_NAME}:latest
-            docker logout ${ALLINFRA_ECR}
-            rm -f ${BASH_ENV}
-    
-      - &step_configure_deploy_variables
-        run:
-          name: Configure Deploy Variables
-          shell: /bin/bash -eo pipefail
-          command: |
-            declare -A envs
-            envs[app.infura.key]="$(eval echo \$${ENV^^}_INFURA_API_KEY)"
-            helm_args=()
-            for k in "${!envs[@]}"; do
-              helm_args+=(--set-string ${k}=\'${envs[$k]}\')
-            done
-            echo "export HELM_ARGS=(${helm_args[@]})" >> $BASH_ENV
-    
-      - &step_deploy
-        run:
-          name: Deploy
-          shell: /bin/bash -eo pipefail
-      #     command: |
-      #       helm upgrade --install \
-      #         --kubeconfig ${KUBECONFIG} \
-      #         ${ENV}-${APP}-${CIRCLE_PROJECT_REPONAME} \
-      #         --namespace ${NS} \
-      #         --set-string image.tag=${VERSION} \
-      #         "${HELM_ARGS[@]}" \
-      #         -f helm/${ENV}-values.yaml \
-      #         helm/${CIRCLE_PROJECT_REPONAME}
-          command: |
-            echo "key la: ${AWS_ACCESS_KEY_ID}"
-            echo "key la: ${AWS_SECRET_ACCESS_KEY}"
-            echo "key la: ${AWS_SESSION_TOKEN}"
-            #aws sts get-caller-identity
-            
-            # echo -------
-            # cat /root/.kube/config
-            # echo ---------
-            # aws --region eu-west-1 eks get-token --cluster-name test-cluster
-            if [ "${CIRCLE_BRANCH}" == "test" ]; then
-              aws eks update-kubeconfig --name test-cluster --region eu-west-1
-            elif [ "${CIRCLE_BRANCH}" == "staging" ]; then
-              aws eks update-kubeconfig --name staging-cluster --region eu-west-1
-            elif [ "${CIRCLE_BRANCH}" == "master" ]; then
-              aws eks update-kubeconfig --name production-cluster --region eu-west-1
-            fi
-
-
-            # echo -------
-            # echo "      env:" >> /root/.kube/config
-            # echo "      - name: AWS_ACCESS_KEY_ID" >> /root/.kube/config
-            # echo "        value: ${AWS_ACCESS_KEY_ID}" >> /root/.kube/config
-            # echo "      - name: AWS_SECRET_ACCESS_KEY" >> /root/.kube/config
-            # echo "        value: ${AWS_SECRET_ACCESS_KEY}" >> /root/.kube/config
-            # echo "      - name: AWS_SESSION_TOKEN" >> /root/.kube/config
-            # echo "        value: ${AWS_SESSION_TOKEN}" >> /root/.kube/config
-            # echo -------
-            # cat /root/.kube/config
-            # echo -------
-            kubectl config view
-            kubectl version
-            helm ls -n $NS
-            
-      - &step_deploy_cleanup
-        run:
-          name: Clean-Up
-          shell: /bin/bash -eo pipefail
-          command: |
-            rm -f $KUBECONFIG $BASH_ENV
-          when: always
-    
-    workflows:
-      version: 2
-    
-      k8s_build_and_deploy:
-        jobs:
-          # - build_image:
-          #     context:
-          #       - oidc-context
-          #     filters:
-          #       branches:
-          #         only:
-          #           - test
-          #           - staging
-          #           - master
-          - deploy:
-              context:
-                - oidc-context
-              # requires:
-              #   - build_image
-              filters:
-                branches:
-                  only:
-                    - test
-                    - staging
-                    - master
-    
+  build_and_deploy:
     jobs:
-      # build_image:
-      #   <<: *build_config
-      #   steps:
-      #     - checkout
-      #     - *step_setup_remote_docker
-      #     # - *step_install_deps
-      #     - *step_set_version
-      #     - *step_set_environment
-      #     # - *step_build_image
-      #     # - *step_push_image
-      #     # - *step_build_cleanup
-    
-      deploy:
-        <<: *deploy_config
-        steps:
-          - checkout
-          - *step_setup_remote_docker
-          # - *step_install_deps
-          - *step_set_version
-          - *step_set_environment
-          - *step_configure_deploy_variables
-          - *step_deploy
-          - *step_deploy_cleanup
-    
+      - deploy:
+          filters:
+            branches:
+              only: 
+                - staging
+                - master
+
+jobs:    
+  deploy:
+    <<: *deploy_config
+    steps:
+      - checkout
+      - *step_setup_remote_docker
+      - *step_install_deps
+      - *step_set_version
+      - *step_set_environment
+      - *step_deploy
+      - *step_deploy_cleanup
