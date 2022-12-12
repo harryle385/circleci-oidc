@@ -85,7 +85,7 @@ workflows:
           filters:
             branches:
               only: 
-                - staging
+                - main
                 - master
 
 jobs:    
